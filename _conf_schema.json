@@ -30,13 +30,14 @@
     },
     "send_mode": {
         "description": "发送模式",
-        "hint": "此配置决定发送歌曲的方式: 卡片模式(card)、语音模式(record)、文本模式(text), 注意卡片模式仅支持aiocqhttp消息平台, 不满足时自动采用可用方式发送歌曲",
+        "hint": "此配置决定发送歌曲的方式: 卡片模式(card)、语音模式(record)、文本模式(text)、合并模式(forward), 注意卡片模式仅支持aiocqhttp消息平台, 合并模式会将歌曲信息、评论和歌词合并为一条消息发送",
         "type": "string",
         "default": "card",
         "options": [
             "text",
             "record",
-            "card"
+            "card",
+            "forward"
         ]
     },
     "enable_comments":  {
@@ -48,6 +49,12 @@
     "enable_lyrics": {
         "description": "是否启用歌词",
         "hint": "开启后在发送歌曲后附加一张歌曲图片",
+        "type": "bool",
+        "default": false
+    },
+    "enable_record_mode": {
+        "description": "是否启用语音模式",
+        "hint": "开启后尝试发送语音消息，如果语音转换失败会自动降级为文本模式",
         "type": "bool",
         "default": false
     },
