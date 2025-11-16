@@ -8,6 +8,7 @@ import aiofiles
 from io import BytesIO
 from bs4 import BeautifulSoup
 import hashlib
+import time
 from astrbot import logger
 
 
@@ -103,18 +104,33 @@ class MusicCardRenderer:
     async def download_image(
         self, url: str, session: aiohttp.ClientSession
     ) -> Image.Image:
+        start_time = time.time()
+        logger.info(f"[图片下载开始] URL: {url}")
+        
         cache_path = self._get_cache_path(url)
         if cache_path.exists():
+            execution_time = time.time() - start_time
+            logger.info(f"[图片下载完成] URL: {url}, 耗时: {execution_time:.2f}秒, 来源: 缓存")
             return Image.open(cache_path).convert("RGB")
 
         async with self.semaphore:
-            async with session.get(url) as resp:
-                if resp.status == 200:
-                    img_bytes = await resp.read()
-                    async with aiofiles.open(cache_path, "wb") as f:
-                        await f.write(img_bytes)
-                    return Image.open(BytesIO(img_bytes)).convert("RGB")
-                raise ValueError(f"下载失败: {url}")
+            try:
+                async with session.get(url) as resp:
+                    if resp.status == 200:
+                        img_bytes = await resp.read()
+                        async with aiofiles.open(cache_path, "wb") as f:
+                            await f.write(img_bytes)
+                        execution_time = time.time() - start_time
+                        logger.info(f"[图片下载完成] URL: {url}, 耗时: {execution_time:.2f}秒, 来源: 网络")
+                        return Image.open(BytesIO(img_bytes)).convert("RGB")
+                    else:
+                        execution_time = time.time() - start_time
+                        logger.error(f"[图片下载失败] URL: {url}, 耗时: {execution_time:.2f}秒, 状态码: {resp.status}")
+                        raise ValueError(f"下载失败: {url}")
+            except Exception as e:
+                execution_time = time.time() - start_time
+                logger.error(f"[图片下载异常] URL: {url}, 耗时: {execution_time:.2f}秒, 错误: {e}")
+                raise
 
     def format_count(self, count: int) -> str:
         if count >= 10000:
@@ -130,6 +146,9 @@ class MusicCardRenderer:
         session: aiohttp.ClientSession,
         index: int,
     ) -> Image.Image:
+        start_time = time.time()
+        logger.info(f"[卡片渲染开始] 视频标题: {video.get('title', '未知')}, 序号: {index}")
+        
         try:
             card = Image.new("RGBA", (self.card_width, self.card_height), "#ffffff")
             draw = ImageDraw.Draw(card)
@@ -210,15 +229,22 @@ class MusicCardRenderer:
             # 应用圆角遮罩
             card.putalpha(mask)
 
+            execution_time = time.time() - start_time
+            logger.info(f"[卡片渲染完成] 视频标题: {video.get('title', '未知')}, 序号: {index}, 耗时: {execution_time:.2f}秒")
+            
             return card
         except Exception as e:
-            logger.error(f"[错误] 渲染卡片失败: {e}")
+            execution_time = time.time() - start_time
+            logger.error(f"[卡片渲染失败] 视频标题: {video.get('title', '未知')}, 序号: {index}, 耗时: {execution_time:.2f}秒, 错误: {e}")
             # 返回空白卡片以避免中断整个流程
             return Image.new("RGBA", (self.card_width, self.card_height), "#ffffff")
 
     async def render_video_list_image(
         self, video_list: list, cards_per_row: int = 3, quality: int = 70
     ) -> bytes:
+        start_time = time.time()
+        logger.info(f"[视频列表渲染开始] 视频数量: {len(video_list)}, 每行卡片数: {cards_per_row}")
+        
         font = ImageFont.truetype(self.font_path, 16)
 
         async with aiohttp.ClientSession() as session:
@@ -265,4 +291,8 @@ class MusicCardRenderer:
 
         buffer = BytesIO()
         final_image.save(buffer, format="JPEG", quality=quality)
+        
+        execution_time = time.time() - start_time
+        logger.info(f"[视频列表渲染完成] 视频数量: {len(video_list)}, 耗时: {execution_time:.2f}秒, 图片大小: {len(buffer.getvalue())}字节")
+        
         return buffer.getvalue()
