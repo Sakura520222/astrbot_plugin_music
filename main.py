@@ -54,6 +54,11 @@ class MusicPlugin(Star):
         self.cache_dir = "data/plugins/astrbot_plugin_music/cache"
         os.makedirs(self.cache_dir, exist_ok=True)
         
+        # 缓存配置
+        self.cache_enabled = config.get("cache_enabled", True)
+        self.cache_max_size = config.get("cache_max_size", 500)  # MB
+        self.cache_max_age = config.get("cache_max_age", 7)  # 天
+        
         # 选择模式
         self.select_mode = config.get("select_mode", "text")
 
@@ -75,13 +80,57 @@ class MusicPlugin(Star):
         #     from .api import TencentMusicAPI
         #     self.api = TencentMusicAPI()
     
-    async def download_audio(self, url: str, filename: str) -> str:
+    async def download_audio(self, url: str, filename: str, force_download: bool = False) -> str:
         """下载音频文件到本地缓存"""
         filepath = os.path.join(self.cache_dir, filename)
         
-        # 如果文件已存在，直接返回路径
-        if os.path.exists(filepath):
+        # 如果缓存未启用，直接返回URL
+        if not self.cache_enabled:
+            return url
+        
+        # 确保缓存目录存在
+        os.makedirs(self.cache_dir, exist_ok=True)
+        
+        # 如果文件已存在且不需要强制下载，直接返回路径
+        if os.path.exists(filepath) and not force_download:
+            logger.info(f"使用缓存文件: {filepath}")
+            # 更新文件修改时间
+            import time
+            os.utime(filepath, (time.time(), time.time()))
             return filepath
+        
+        # 智能缓存查找：尝试查找相同歌曲ID的其他缓存文件
+        song_id = filename.split('_')[0] if '_' in filename else ""
+        if song_id and not force_download:
+            # 确保缓存目录存在且可访问
+            if os.path.exists(self.cache_dir):
+                # 查找相同歌曲ID的缓存文件（优先返回.wav文件）
+                wav_files = []
+                mp3_files = []
+                
+                for existing_file in os.listdir(self.cache_dir):
+                    if existing_file.startswith(song_id + '_'):
+                        if existing_file.endswith('.wav'):
+                            wav_files.append(existing_file)
+                        elif existing_file.endswith('.mp3'):
+                            mp3_files.append(existing_file)
+                
+                # 优先返回.wav文件
+                for file_list in [wav_files, mp3_files]:
+                    for existing_file in file_list:
+                        existing_path = os.path.join(self.cache_dir, existing_file)
+                        if os.path.exists(existing_path):
+                            logger.info(f"找到相同歌曲的缓存文件，使用: {existing_file}")
+                            # 更新文件修改时间
+                            import time
+                            os.utime(existing_path, (time.time(), time.time()))
+                            return existing_path
+        
+        # 检查缓存目录大小，如果超过限制则清理
+        cache_info = await self.get_cache_info()
+        max_size_bytes = self.cache_max_size * 1024 * 1024
+        if cache_info["total_size"] > max_size_bytes:
+            await self.cleanup_cache()
         
         try:
             async with aiohttp.ClientSession() as session:
@@ -89,20 +138,120 @@ class MusicPlugin(Star):
                     if response.status == 200:
                         async with aiofiles.open(filepath, 'wb') as f:
                             await f.write(await response.read())
-                        logger.info(f"音频文件已下载: {filepath}")
+                        logger.info(f"音频文件已下载并缓存: {filepath}")
+                        
+                        # 更新文件修改时间
+                        import time
+                        os.utime(filepath, (time.time(), time.time()))
+                        
                         return filepath
                     else:
                         logger.error(f"下载音频失败，状态码: {response.status}")
-                        return None
+                        return url  # 返回原始URL作为降级方案
         except Exception as e:
             logger.error(f"下载音频时出错: {e}")
-            return None
+            return url  # 返回原始URL作为降级方案
     
     def get_cache_filename(self, song_id: str, audio_url: str) -> str:
         """生成缓存文件名"""
         # 使用歌曲ID和音频URL的哈希值作为文件名
         url_hash = hashlib.md5(audio_url.encode()).hexdigest()[:8]
         return f"{song_id}_{url_hash}.mp3"
+    
+    def get_wav_cache_filename(self, song_id: str, audio_url: str) -> str:
+        """生成WAV缓存文件名"""
+        # 使用歌曲ID和音频URL的哈希值作为文件名
+        url_hash = hashlib.md5(audio_url.encode()).hexdigest()[:8]
+        return f"{song_id}_{url_hash}.wav"
+    
+    def get_cache_file_path(self, filename: str) -> str:
+        """获取缓存文件完整路径"""
+        return os.path.join(self.cache_dir, filename)
+    
+    async def cleanup_cache(self):
+        """清理过期缓存文件"""
+        if not os.path.exists(self.cache_dir):
+            return
+            
+        import time
+        current_time = time.time()
+        max_age_seconds = self.cache_max_age * 24 * 60 * 60
+        
+        # 计算当前缓存大小
+        total_size = 0
+        cache_files = []
+        
+        for filename in os.listdir(self.cache_dir):
+            filepath = os.path.join(self.cache_dir, filename)
+            if os.path.isfile(filepath) and filename.endswith(('.mp3', '.wav')):
+                file_stat = os.stat(filepath)
+                file_size = file_stat.st_size
+                file_age = current_time - file_stat.st_mtime
+                
+                cache_files.append({
+                    'path': filepath,
+                    'size': file_size,
+                    'age': file_age,
+                    'mtime': file_stat.st_mtime
+                })
+                total_size += file_size
+        
+        # 按修改时间排序（最旧的在前）
+        cache_files.sort(key=lambda x: x['mtime'])
+        
+        # 清理过期文件
+        deleted_files = []
+        for file_info in cache_files:
+            if file_info['age'] > max_age_seconds:
+                try:
+                    os.remove(file_info['path'])
+                    deleted_files.append(file_info['path'])
+                    total_size -= file_info['size']
+                    logger.info(f"清理过期缓存文件: {os.path.basename(file_info['path'])}")
+                except Exception as e:
+                    logger.warning(f"删除过期缓存文件失败 {file_info['path']}: {e}")
+        
+        # 如果缓存大小仍然超过限制，继续清理最旧的文件
+        max_size_bytes = self.cache_max_size * 1024 * 1024
+        while total_size > max_size_bytes and cache_files:
+            file_info = cache_files.pop(0)
+            if file_info['path'] not in deleted_files:
+                try:
+                    os.remove(file_info['path'])
+                    deleted_files.append(file_info['path'])
+                    total_size -= file_info['size']
+                    logger.info(f"清理超限缓存文件: {os.path.basename(file_info['path'])}")
+                except Exception as e:
+                    logger.warning(f"删除超限缓存文件失败 {file_info['path']}: {e}")
+        
+        if deleted_files:
+            logger.info(f"缓存清理完成，共删除 {len(deleted_files)} 个文件")
+    
+    async def get_cache_info(self) -> dict:
+        """获取缓存统计信息"""
+        if not os.path.exists(self.cache_dir):
+            return {"total_files": 0, "total_size": 0, "mp3_files": 0, "wav_files": 0}
+        
+        total_size = 0
+        mp3_count = 0
+        wav_count = 0
+        
+        for filename in os.listdir(self.cache_dir):
+            filepath = os.path.join(self.cache_dir, filename)
+            if os.path.isfile(filepath):
+                if filename.endswith('.mp3'):
+                    mp3_count += 1
+                elif filename.endswith('.wav'):
+                    wav_count += 1
+                
+                total_size += os.path.getsize(filepath)
+        
+        return {
+            "total_files": mp3_count + wav_count,
+            "total_size": total_size,
+            "mp3_files": mp3_count,
+            "wav_files": wav_count
+        }
     
     async def convert_audio_to_wav(self, input_path: str, output_path: str) -> bool:
         """将音频转换为wav格式（需要安装ffmpeg）"""
@@ -181,7 +330,8 @@ class MusicPlugin(Star):
                 if not index.isdigit() or int(index) < 1 or int(index) > len(songs):
                     return
                 selected_song = songs[int(index) - 1]
-                await self._send_song(event=event, song=selected_song)
+                # 使用asyncio.create_task来异步执行发送操作，避免阻塞会话
+                asyncio.create_task(self._send_song(event=event, song=selected_song))
                 controller.stop()
 
             try:
@@ -193,6 +343,72 @@ class MusicPlugin(Star):
                 logger.error("点歌发生错误" + str(e))
 
         event.stop_event()
+
+    @filter.command("缓存管理")
+    async def cache_management(self, event: AstrMessageEvent):
+        """缓存管理命令"""
+        args = event.message_str.replace("缓存管理", "").strip().split()
+        
+        if not args:
+            # 显示缓存信息
+            cache_info = await self.get_cache_info()
+            total_size_mb = cache_info["total_size"] / (1024 * 1024)
+            
+            message = (
+                f"🎵 音乐缓存信息\n"
+                f"📊 总文件数: {cache_info['total_files']} 个\n"
+                f"💾 总大小: {total_size_mb:.2f} MB\n"
+                f"🎶 MP3文件: {cache_info['mp3_files']} 个\n"
+                f"🔊 WAV文件: {cache_info['wav_files']} 个\n"
+                f"⚙️ 缓存状态: {'启用' if self.cache_enabled else '禁用'}\n"
+                f"📏 最大大小: {self.cache_max_size} MB\n"
+                f"⏰ 最长保存: {self.cache_max_age} 天\n\n"
+                f"使用命令:\n"
+                f"• 缓存管理 清理 - 清理过期缓存\n"
+                f"• 缓存管理 状态 - 查看缓存状态\n"
+                f"• 缓存管理 启用 - 启用缓存\n"
+                f"• 缓存管理 禁用 - 禁用缓存"
+            )
+            await event.send(event.plain_result(message))
+            return
+        
+        command = args[0].lower()
+        
+        if command == "清理" or command == "clean":
+            await self.cleanup_cache()
+            cache_info = await self.get_cache_info()
+            total_size_mb = cache_info["total_size"] / (1024 * 1024)
+            
+            message = f"🧹 缓存清理完成！\n当前缓存大小: {total_size_mb:.2f} MB"
+            await event.send(event.plain_result(message))
+            
+        elif command == "状态" or command == "status":
+            cache_info = await self.get_cache_info()
+            total_size_mb = cache_info["total_size"] / (1024 * 1024)
+            
+            message = (
+                f"📊 缓存状态\n"
+                f"文件数: {cache_info['total_files']} 个\n"
+                f"大小: {total_size_mb:.2f} MB\n"
+                f"状态: {'启用' if self.cache_enabled else '禁用'}"
+            )
+            await event.send(event.plain_result(message))
+            
+        elif command == "启用" or command == "enable":
+            self.cache_enabled = True
+            message = "✅ 音乐缓存已启用"
+            await event.send(event.plain_result(message))
+            
+        elif command == "禁用" or command == "disable":
+            self.cache_enabled = False
+            # 禁用缓存时清理所有缓存文件
+            await self.cleanup_cache()
+            message = "❌ 音乐缓存已禁用，并清理了所有缓存文件"
+            await event.send(event.plain_result(message))
+            
+        else:
+            message = "❓ 未知命令，请使用: 清理/状态/启用/禁用"
+            await event.send(event.plain_result(message))
 
     async def _send_selection(self, event: AstrMessageEvent, songs: list) -> None:
         """
@@ -287,17 +503,24 @@ class MusicPlugin(Star):
                     # 音频下载和转换
                     song_id = song.get("id", "unknown")
                     cache_filename = self.get_cache_filename(song_id, audio_url)
-                    wav_filename = cache_filename.replace(".mp3", ".wav")
+                    wav_filename = self.get_wav_cache_filename(song_id, audio_url)
                     wav_path = os.path.join(self.cache_dir, wav_filename)
                     
                     # 检查是否已有wav文件
                     if not os.path.exists(wav_path):
-                        # 下载音频文件
-                        mp3_path = await self.download_audio(audio_url, cache_filename)
-                        if mp3_path:
+                        # 使用智能缓存查找，尝试查找相同歌曲的缓存文件
+                        cached_file = await self.download_audio(audio_url, cache_filename)
+                        
+                        # 如果智能缓存查找返回的是wav文件路径，直接使用
+                        if cached_file and cached_file.endswith('.wav') and os.path.exists(cached_file):
+                            wav_path = cached_file
+                            logger.info(f"智能缓存查找找到wav文件，直接使用: {os.path.basename(wav_path)}")
+                        # 如果返回的是mp3文件路径，需要转换为wav
+                        elif cached_file and cached_file.endswith('.mp3') and os.path.exists(cached_file):
+                            mp3_path = cached_file
                             # 转换为wav格式
                             if await self.convert_audio_to_wav(mp3_path, wav_path):
-                                # 转换成功后删除临时mp3文件
+                                # 转换成功后删除临时mp3文件（如果缓存已存在则保留）
                                 try:
                                     os.remove(mp3_path)
                                 except:
@@ -306,7 +529,7 @@ class MusicPlugin(Star):
                                 # 转换失败，使用原始mp3路径
                                 wav_path = mp3_path
                         else:
-                            # 下载失败，使用在线URL
+                            # 下载失败或缓存未启用，使用在线URL
                             wav_path = audio_url
                     
                     # 语音消息 - 针对Telegram平台优化
@@ -342,23 +565,33 @@ class MusicPlugin(Star):
                     
                     await event.send(event.chain_result(message_chain))
                     
-                    # 发送成功后删除本地音频文件
-                    files_to_delete = []
-                    if os.path.exists(wav_path):
-                        files_to_delete.append(wav_path)
-                    
-                    # 如果存在原始MP3文件，也加入删除列表
-                    mp3_path = os.path.join(self.cache_dir, cache_filename)
-                    if os.path.exists(mp3_path):
-                        files_to_delete.append(mp3_path)
-                    
-                    # 删除所有音频文件
-                    for file_path in files_to_delete:
-                        try:
-                            os.remove(file_path)
-                            logger.info(f"语音发送成功，已删除本地音频文件: {file_path}")
-                        except Exception as e:
-                            logger.warning(f"删除本地音频文件失败 {file_path}: {e}")
+                    # 根据缓存配置决定是否删除本地音频文件
+                    if not self.cache_enabled:
+                        files_to_delete = []
+                        if os.path.exists(wav_path) and wav_path.startswith(self.cache_dir):
+                            files_to_delete.append(wav_path)
+                        
+                        # 如果存在原始MP3文件，也加入删除列表
+                        mp3_path = os.path.join(self.cache_dir, cache_filename)
+                        if os.path.exists(mp3_path):
+                            files_to_delete.append(mp3_path)
+                        
+                        # 删除所有音频文件
+                        for file_path in files_to_delete:
+                            try:
+                                os.remove(file_path)
+                                logger.info(f"语音发送成功，已删除本地音频文件: {file_path}")
+                            except Exception as e:
+                                logger.warning(f"删除本地音频文件失败 {file_path}: {e}")
+                    else:
+                        # 缓存启用时，更新文件修改时间以延长缓存寿命
+                        import time
+                        if os.path.exists(wav_path) and wav_path.startswith(self.cache_dir):
+                            try:
+                                os.utime(wav_path, (time.time(), time.time()))
+                                logger.info(f"语音发送成功，缓存文件已更新: {wav_path}")
+                            except Exception as e:
+                                logger.warning(f"更新缓存文件时间失败 {wav_path}: {e}")
                     
                 except Exception as e:
                     logger.error(f"发送语音消息失败: {e}")

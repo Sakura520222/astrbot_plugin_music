@@ -63,5 +63,23 @@
         "hint": "点歌时用户在此时间内没有进行操作则自动取消点歌",
         "type": "int",
         "default": 30
+    },
+    "cache_enabled": {
+        "description": "是否启用音乐文件缓存",
+        "hint": "开启后同一点歌请求会使用本地缓存文件，提高响应速度",
+        "type": "bool",
+        "default": true
+    },
+    "cache_max_size": {
+        "description": "缓存最大大小（MB）",
+        "hint": "缓存文件夹的最大大小限制，超过时会自动清理最旧的文件",
+        "type": "int",
+        "default": 500
+    },
+    "cache_max_age": {
+        "description": "缓存最长保存时间（天）",
+        "hint": "缓存文件的最长保存时间，超过时会自动清理",
+        "type": "int",
+        "default": 7
     }
 }
