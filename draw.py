@@ -78,18 +78,16 @@ class MusicCardRenderer:
         self,
         font_path: Path,
         cache_dir: Path = Path("image_cache"),
-        card_width: int = 300,
-        card_height: int = 250,
-        thumb_height: int = 168,
-        margin: int = 16,
-        corner_radius: int = 10,
+        card_width: int = 380,
+        card_height: int = 130,
+        margin: int = 20,
+        corner_radius: int = 15,
         max_concurrency: int = 10,
     ):
         self.font_path = font_path
         self.cache_dir = cache_dir
         self.card_width = card_width
         self.card_height = card_height
-        self.thumb_height = thumb_height
         self.margin = margin
         self.corner_radius = corner_radius
         self.semaphore = asyncio.Semaphore(max_concurrency)
@@ -123,6 +121,15 @@ class MusicCardRenderer:
             return f"{count / 1000:.1f}千"
         return str(count)
 
+    def format_duration(self, duration: int) -> str:
+        """
+        将毫秒转换为 mm:ss 格式
+        """
+        total_seconds = int(duration / 1000)
+        minutes = total_seconds // 60
+        seconds = total_seconds % 60
+        return f"{minutes:02d}:{seconds:02d}"
+
     async def draw_card(
         self,
         video: dict,
@@ -131,74 +138,65 @@ class MusicCardRenderer:
         index: int,
     ) -> Image.Image:
         try:
+            # 创建卡片背景（渐变效果）
             card = Image.new("RGBA", (self.card_width, self.card_height), "#ffffff")
             draw = ImageDraw.Draw(card)
-
-            # 封面
-            raw_url = video.get("pic", "")
-            pic_url = raw_url if raw_url.startswith("http") else ("https:" + raw_url)
-            thumb = await self.download_image(pic_url, session)
-            thumb = thumb.resize((self.card_width, self.thumb_height))
-            card.paste(thumb, (0, 0))
-
-            # 渐变黑图层
-            gradient_height = 40
-            alpha_gradient = Image.new("L", (self.card_width, gradient_height), color=0)
-            for y in range(gradient_height):
-                alpha = int(180 * (y / gradient_height))
-                ImageDraw.Draw(alpha_gradient).line(
-                    [(0, y), (self.card_width, y)], fill=alpha
-                )
-            overlay = Image.new(
-                "RGBA", (self.card_width, gradient_height), color=(0, 0, 0, 255)
-            )
-            overlay.putalpha(alpha_gradient)
-            card.paste(overlay, (0, self.thumb_height - 40), overlay)
-
-            # 播放量
+            
+            # 绘制渐变背景
+            for y in range(self.card_height):
+                ratio = y / self.card_height
+                r = int(240 * (1 - ratio) + 220 * ratio)
+                g = int(245 * (1 - ratio) + 230 * ratio)
+                b = int(250 * (1 - ratio) + 240 * ratio)
+                draw.line([(0, y), (self.card_width, y)], fill=(r, g, b))
+            
+            # 绘制卡片边框和阴影效果
+            draw.rectangle([0, 0, self.card_width, self.card_height], outline="#e0e0e0", width=1)
+            
+            # 绘制序号标签
+            draw.rounded_rectangle([15, 15, 45, 45], radius=15, fill="#4a90e2")
+            # 使用更大的字体绘制序号
+            index_font = ImageFont.truetype(self.font_path, 24)
+            draw.text((22, 18), str(index), font=index_font, fill="#ffffff")
+            
+            # 标题（使用更大的字体）
+            title = video.get("title", video.get("name", "未知歌曲"))
+            # 移除可能的HTML标签
+            title = re.sub(r'<[^>]+>', '', title)
+            # 处理长标题，限制字数
+            if len(title) > 35:
+                title = title[:35] + "..."
+            # 使用更大的字体大小绘制标题
+            title_font = ImageFont.truetype(self.font_path, 26)
+            draw.text((65, 20), title, font=title_font, fill="#333333")
+            
+            # 歌手信息（第二行，使用更大的字体）
+            author = video.get("author", video.get("artists", "未知歌手"))
+            # 移除可能的HTML标签
+            author = re.sub(r'<[^>]+>', '', author)
+            # 处理长歌手名
+            if len(author) > 25:
+                author = author[:25] + "..."
+            # 使用更大的字体大小
+            info_font = ImageFont.truetype(self.font_path, 22)
+            # 第二行显示歌手信息
             draw.text(
-                (8, self.thumb_height - 20),
-                f"{self.format_count(video['play'])}",
-                font=font,
-                fill="#ffffff",
-            )
-
-            # 时长
-            draw.text(
-                (self.card_width - 40, self.thumb_height - 20),
-                f"{video['duration']}",
-                font=font,
-                fill="#ffffff",
-            )
-
-            # 标题
-            raw_title = BeautifulSoup(video["title"], "html.parser").get_text()
-            title = (
-                raw_title[:18] + "\n" + raw_title[18:36] + "..."
-                if len(raw_title) > 36
-                else raw_title[:18] + "\n" + raw_title[18:]
-            )
-            draw.text((8, self.thumb_height + 8), title, font=font, fill="#000000")
-
-            # 作者
-            draw.text(
-                (8, self.thumb_height + 60),
-                f"UP {video['author']}",
-                font=font,
+                (65, 60),
+                f"歌手: {author}",
+                font=info_font,
                 fill="#666666",
             )
-
-            # 序号
+            
+            # 时长信息（第三行，使用更大的字体）
+            duration = video.get("duration", 0)
+            # 第三行显示时长信息
             draw.text(
-                (
-                    self.card_width - 30,
-                    self.card_height - 20,
-                ),
-                str(index),
-                font=font,
+                (65, 90),
+                f"时长: {self.format_duration(duration)}",
+                font=info_font,
                 fill="#666666",
             )
-
+            
             # 创建圆角遮罩
             mask = Image.new("L", (self.card_width, self.card_height), 0)
             draw_mask = ImageDraw.Draw(mask)
@@ -209,7 +207,7 @@ class MusicCardRenderer:
             )
             # 应用圆角遮罩
             card.putalpha(mask)
-
+            
             return card
         except Exception as e:
             logger.error(f"[错误] 渲染卡片失败: {e}")
@@ -217,9 +215,10 @@ class MusicCardRenderer:
             return Image.new("RGBA", (self.card_width, self.card_height), "#ffffff")
 
     async def render_video_list_image(
-        self, video_list: list, cards_per_row: int = 3, quality: int = 70
+        self, video_list: list, cards_per_row: int = 3, quality: int = 85
     ) -> bytes:
-        font = ImageFont.truetype(self.font_path, 16)
+        # 使用更大的字体大小，确保与卡片字体协调
+        font = ImageFont.truetype(self.font_path, 20)
 
         async with aiohttp.ClientSession() as session:
             tasks = [
@@ -228,39 +227,54 @@ class MusicCardRenderer:
             ]
             cards = await asyncio.gather(*tasks)
 
-        # 拼接每一行（分层）
-        rows = []
-        for i in range(0, len(cards), cards_per_row):
-            row_cards = cards[i : i + cards_per_row]
-            row_width = (
-                cards_per_row * self.card_width + (cards_per_row + 1) * self.margin
-            )
-            row_img = Image.new(
-                "RGBA",
-                (row_width, self.card_height + 2 * self.margin),
-                color="#f5f5f5",
-            )
-            for j, card in enumerate(row_cards):
-                x = self.margin + j * (self.card_width + self.margin)
-                row_img.paste(card, (x, self.margin), card)
-            rows.append(row_img)
-
-        # 最终拼接所有行
-        total_width = rows[0].width
-        total_height = sum(r.height for r in rows)
+        # 计算总行数
+        total_rows = (len(cards) + cards_per_row - 1) // cards_per_row
+        
+        # 增加卡片之间的间距，确保布局美观
+        card_spacing = 30
+        
+        # 计算画布尺寸，确保整个画布尺寸合适
+        row_width = cards_per_row * self.card_width + (cards_per_row - 1) * card_spacing
+        total_width = row_width + 2 * self.margin
+        # 增加整个画布的高度，确保有足够的空间
+        header_height = 100
+        total_height = header_height + total_rows * self.card_height + (total_rows - 1) * card_spacing + 2 * self.margin
+        
+        # 创建主画布，使用柔和的背景色
         canvas = Image.new(
             "RGBA",
             (total_width, total_height),
-            color="#f5f5f5",
+            color="#f8f9fa",
         )
+        draw = ImageDraw.Draw(canvas)
+        
+        # 绘制标题（使用更大的字体）
+        title_font = ImageFont.truetype(self.font_path, 32)
+        title = "歌曲搜索结果"
+        bbox = draw.textbbox((0, 0), title, font=title_font)
+        title_width = bbox[2] - bbox[0]
+        draw.text(((total_width - title_width) / 2, 20), title, font=title_font, fill="#333333")
+        
+        # 绘制说明文字 - 移动到左上角，使用更大的字体
+        footer_font = ImageFont.truetype(self.font_path, 18)
+        footer_text = "请回复序号选择歌曲，例如：1"
+        draw.text((self.margin, 65), footer_text, font=footer_font, fill="#666666")
+        
+        # 绘制标题下方的分割线
+        draw.line([(self.margin, 90), (total_width - self.margin, 90)], fill="#e0e0e0", width=2)
+        
+        # 拼接所有卡片，增加卡片间距
+        y_offset = 110  # 标题、说明文字和分割线占用的高度
+        for i in range(0, len(cards), cards_per_row):
+            row_cards = cards[i : i + cards_per_row]
+            x_offset = self.margin
+            for j, card in enumerate(row_cards):
+                canvas.paste(card, (x_offset, y_offset), card)
+                x_offset += self.card_width + card_spacing
+            y_offset += self.card_height + card_spacing
 
-        y_offset = 0
-        for row in rows:
-            canvas.paste(row, (0, y_offset), row)
-            y_offset += row.height
-
-        # 异步保存 JPEG，降画质
-        final_image = Image.new("RGB", canvas.size, "#f5f5f5")
+        # 转换为 RGB 并保存
+        final_image = Image.new("RGB", canvas.size, "#f8f9fa")
         final_image.paste(canvas, mask=canvas.split()[3])
 
         buffer = BytesIO()

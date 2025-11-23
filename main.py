@@ -20,7 +20,7 @@ from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
     AiocqhttpMessageEvent,
 )
 from astrbot import logger
-from data.plugins.astrbot_plugin_music.draw import draw_lyrics
+from data.plugins.astrbot_plugin_music.draw import draw_lyrics, MusicCardRenderer
 from data.plugins.astrbot_plugin_music.utils import format_time
 
 
@@ -76,6 +76,13 @@ class MusicPlugin(Star):
 
         # 等待超时时长
         self.timeout = config.get("timeout", 30)
+        
+        # 初始化 MusicCardRenderer
+        from pathlib import Path
+        self.card_renderer = MusicCardRenderer(
+            font_path=Path("data/plugins/astrbot_plugin_music/simhei.ttf"),
+            cache_dir=Path("data/plugins/astrbot_plugin_music/image_cache")
+        )
         # elif self.default_api == "tencent":
         #     from .api import TencentMusicAPI
         #     self.api = TencentMusicAPI()
@@ -415,12 +422,18 @@ class MusicPlugin(Star):
         发送歌曲选择
         """
         if self.select_mode == "image":
-            formatted_songs = [
-                f"{index + 1}. {song['name']} - {song['artists']}"
-                for index, song in enumerate(songs)
-            ]
-            image = await self.text_to_image("\n".join(formatted_songs))
-            await event.send(MessageChain(chain=[Comp.Image.fromURL(image)]))
+            try:
+                # 使用 MusicCardRenderer 生成歌曲选择图片
+                image_bytes = await self.card_renderer.render_video_list_image(songs)
+                await event.send(MessageChain(chain=[Comp.Image.fromBytes(image_bytes)]))
+            except Exception as e:
+                logger.error(f"生成歌曲选择图片失败: {e}")
+                # 降级为文本模式
+                formatted_songs = [
+                    f"{index + 1}. {song['name']} - {song['artists']}"
+                    for index, song in enumerate(songs)
+                ]
+                await event.send(event.plain_result("\n".join(formatted_songs)))
 
         else:
             formatted_songs = [

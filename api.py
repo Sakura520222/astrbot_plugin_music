@@ -45,7 +45,7 @@ class NetEaseMusicAPI:
         else:
             raise ValueError("不支持的请求方式")
 
-    async def fetch_data(self, keyword: str, limit=5) -> list[dict]:
+    async def fetch_data(self, keyword: str, limit=9) -> list[dict]:
         """搜索歌曲"""
         url = "http://music.163.com/api/search/get/web"
         data = {"s": keyword, "limit": limit, "type": 1, "offset": 0}
@@ -56,6 +56,10 @@ class NetEaseMusicAPI:
                 "name": song["name"],
                 "artists": "、".join(artist["name"] for artist in song["artists"]),
                 "duration": song["duration"],
+                "title": song["name"],
+                "author": "、".join(artist["name"] for artist in song["artists"]),
+                "play": 0,
+                "pic": song.get("album", {}).get("picUrl", ""),
             }
             for song in result["result"]["songs"][:limit]
         ]
@@ -113,7 +117,7 @@ class NetEaseMusicAPINodeJs:
             raise ValueError("不支持的请求方式")
 
 
-    async def fetch_data(self, keyword: str, limit=5) -> list[dict]:
+    async def fetch_data(self, keyword: str, limit=9) -> list[dict]:
         """搜索歌曲"""
         url = "/search"
         data = {"keywords": keyword, "limit": limit, "type": 1, "offset": 0}
@@ -125,6 +129,10 @@ class NetEaseMusicAPINodeJs:
                 "name": song["name"],
                 "artists": "、".join(artist["name"] for artist in song["artists"]),
                 "duration": song["duration"],
+                "title": song["name"],
+                "author": "、".join(artist["name"] for artist in song["artists"]),
+                "play": 0,
+                "pic": song.get("album", {}).get("picUrl", ""),
             }
             for song in result["result"]["songs"][:limit]
         ]
@@ -192,7 +200,7 @@ class MusicSearcher:
             "X-Requested-With": "XMLHttpRequest",
         }
         self.session = aiohttp.ClientSession()
-    async def fetch_data(self, song_name: str, platform_type: str, limit: int = 5):
+    async def fetch_data(self, song_name: str, platform_type: str, limit: int = 9):
         """
         向音乐接口发送 POST 请求以获取歌曲数据
 
